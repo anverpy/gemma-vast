@@ -61,4 +61,4 @@ en mi VM: ssh -p 30043 root@1.2.3.4"*.
 
 ## Licencias
 
-Gemma 4 es Apache 2.0 (según su ficha en Hugging Face). llama.cpp es MIT.
+Este kit es MIT (ver `LICENSE`). Gemma 4 es Apache 2.0 (según su ficha en Hugging Face). llama.cpp es MIT.
