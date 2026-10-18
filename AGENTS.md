@@ -22,10 +22,10 @@ El proxy (Python, solo stdlib) va dentro de `adminvast.sh` (`proxy_source`). No 
    que se queda esperando input y te bloquea.
 2. **Los pasos se ejecutan en el orden en que los escribes.** `--build` va antes de
    `--pull`, y los dos antes de `--launch`. `--setup` equivale a los tres.
-3. **Todos los pasos se pueden repetir sin riesgo.** `--build` salta si ya está
-   compilado, `--pull` salta los archivos completos (verifica el tamaño contra
+3. **Todos los pasos se pueden repetir sin riesgo.** `--build` salta si ya hay
+   `llama-server` (compilado antes o el de la imagen `vastai/llama-cpp` en `/opt/llama.cpp`), `--pull` salta los archivos completos (verifica el tamaño contra
    Hugging Face) y `--launch` no relanza si ya responde.
-4. **Pasos largos.** `--build` tarda 5-10 min, `--pull` 2-10 min (~15GB) y
+4. **Pasos largos.** `--build` tarda 5-10 min si compila (0 con la plantilla Llama.cpp), `--pull` 2-10 min (~15GB) y
    `--launch` 30-90 s. Córrelos en segundo plano o con un timeout de 20 min o más.
    Si la sesión SSH se corta a mitad de camino, vuelve a correr el mismo comando:
    la compilación sigue donde quedó y la descarga empieza de cero (los links de HF
@@ -80,7 +80,7 @@ Rutas en la VM. `BASE` es `/workspace/gemma`, o `$HOME/gemma` si no existe `/wor
 
 | Ruta | Contenido |
 |---|---|
-| `$BASE/llama.cpp/build/bin/llama-server` | binario compilado |
+| `$BASE/llama.cpp/build/bin/llama-server` | binario compilado (si no, usa `/opt/llama.cpp/llama-server` de la imagen o el del `PATH`) |
 | `$BASE/models/` | `.gguf` del modelo + `mmproj` (visión) |
 | `$BASE/prompts/` | copia de `prompts/` local (se reemplaza en cada `--launch`) |
 | `$BASE/gemma-vast-proxy.py` | proxy (se reescribe en cada `--launch`) |
@@ -105,7 +105,8 @@ tareas largas como un prompt de MiniMax.
 | Síntoma | Causa | Solución |
 |---|---|---|
 | `No conecta` | La instancia todavía arranca, falta la clave o el puerto cambió | Espera 1-2 min. Pide el comando SSH actual al usuario (en Vast el puerto cambia al recrear la instancia). Prueba `--key`. |
-| `No hay CUDA toolkit (nvcc)` | La imagen es *runtime*, no *devel* | El usuario tiene que crear la instancia con una imagen CUDA devel o el template PyTorch/ComfyUI de Vast. No intentes instalar CUDA a mano. |
+| `No hay CUDA toolkit (nvcc)` | La imagen no trae `llama-server` ni es CUDA *devel* | Lo más fácil: recrear la instancia con la plantilla Llama.cpp de Vast (`LLAMA_MODEL` vacía). Si no, una imagen CUDA devel. No intentes instalar CUDA a mano. |
+| VRAM ocupada nada más arrancar con la plantilla Llama.cpp | La plantilla tiene `LLAMA_MODEL` y lanzó su propio llama-server (supervisor, puerto 18000) | Pregunta al usuario; con su OK, `supervisorctl stop llama` en la VM, o que recree la instancia con `LLAMA_MODEL` vacía. |
 | La compilación falla con una GPU RTX 50xx | La imagen trae CUDA < 12.8 (no tiene sm_120) | Hace falta una imagen con CUDA 12.8 o más nuevo. |
 | `llama-server se cerró` + `out of memory` | Otro proceso usa la VRAM, o el contexto es muy grande | Revisa `nvidia-smi`. Pregunta antes de matar lo que encuentres. O baja el contexto: `CTX=16384 ./adminvast.sh --restart`. |
 | Respuestas lentas | Con menos de 16GB, llama.cpp (`--fit`) manda más expertos a CPU | Es esperado. Revisa en `server.log` qué quedó en CPU. |

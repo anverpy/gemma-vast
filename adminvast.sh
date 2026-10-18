@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # adminvast.sh — Gemma 4 26B-A4B (con visión) en una VM GPU de 16GB, por SSH.
 #
-# Corre en tu PC (cualquier distro Linux: solo necesita bash 4+, ssh y tar).
-# Todo lo pesado pasa en la VM: compila llama.cpp con CUDA, baja el modelo de
+# Corre en tu PC (Linux, macOS o WSL: solo necesita bash 4+, ssh y tar).
+# Todo lo pesado pasa en la VM: compila llama.cpp con CUDA (o usa el de la
+# plantilla Llama.cpp de Vast), baja el modelo de
 # Hugging Face, lanza llama-server + un proxy que inyecta prompts/*.md como
 # system prompt, y abre un túnel SSH para usar el webui en tu navegador.
 # Nada queda expuesto a internet: todo escucha en 127.0.0.1 de la VM.
@@ -113,6 +114,15 @@ remote() {
     'f=$(mktemp); cat >"$f"; bash "$f" </dev/null; rc=$?; rm -f "$f"; exit $rc' <<<"${hdr}
 export PATH=\"/usr/local/cuda/bin:\$PATH\"
 SUDO=''; [ \"\$(id -u)\" = 0 ] || SUDO=sudo
+# llama-server: el compilado por este script o el de la imagen (plantilla Llama.cpp de Vast).
+LLAMA_BIN=\"\$BASE/llama.cpp/build/bin/llama-server\"
+if [ ! -x \"\$LLAMA_BIN\" ]; then
+  for b in /opt/llama.cpp/llama-server \"\$(command -v llama-server 2>/dev/null)\"; do
+    [ -n \"\$b\" ] && [ -x \"\$b\" ] && { LLAMA_BIN=\"\$b\"; break; }
+  done
+fi
+# Patrón de nuestro llama-server (no toca el que lance la plantilla por su cuenta).
+LLAMA_PAT=\"llama-server -m \$BASE/models/\"
 $1"
 }
 
@@ -195,7 +205,7 @@ build() {
   remote '
 set -e
 mkdir -p "$BASE/logs"
-if [ -x "$BASE/llama.cpp/build/bin/llama-server" ]; then exit 0; fi
+if [ -x "$LLAMA_BIN" ]; then exit 0; fi
 missing=""
 for c in git cmake make g++ curl python3; do command -v "$c" >/dev/null 2>&1 || missing="$missing $c"; done
 if [ -n "$missing" ]; then
@@ -213,7 +223,7 @@ if [ -n "$missing" ]; then
 fi
 if ! command -v nvcc >/dev/null 2>&1; then
   echo "✗ No hay CUDA toolkit (nvcc) en esta imagen."
-  echo "  Usa una imagen con CUDA *devel* (ej. nvidia/cuda:12.8.1-devel-ubuntu24.04) o el template PyTorch/ComfyUI de Vast."
+  echo "  Usa la plantilla Llama.cpp de Vast (trae llama-server, no compila) o una imagen CUDA *devel* (ej. nvidia/cuda:12.8.1-devel-ubuntu24.04)."
   exit 1
 fi
 cuda_ver=$(nvcc --version | grep -oE "release [0-9]+\.[0-9]+" | awk "{print \$2}")
@@ -229,8 +239,10 @@ if ! ldconfig -p 2>/dev/null | grep -q "libcublas\.so" && ! ls /usr/local/cuda/l
 fi
 ' || { err "Preparación fallida (mira el mensaje de arriba)."; return 1; }
 
-  if remote 'test -x "$BASE/llama.cpp/build/bin/llama-server"' 2>/dev/null; then
-    ok "llama.cpp ya estaba compilado"
+  local have
+  have=$(remote '[ -x "$LLAMA_BIN" ] && echo "$LLAMA_BIN"' 2>/dev/null | tail -1) || true
+  if [[ -n "$have" ]]; then
+    ok "llama-server ya disponible, no hace falta compilar (${have})"
     return 0
   fi
 
@@ -260,7 +272,7 @@ cmake --build build --config Release -j"$(nproc)" --target llama-server 2>&1 | t
 ' | while IFS= read -r pct; do printf '\r   %s' "$pct"; done
   echo
 
-  if remote 'test -x "$BASE/llama.cpp/build/bin/llama-server"' 2>/dev/null; then
+  if remote 'test -x "$LLAMA_BIN"' 2>/dev/null; then
     ok "llama-server compilado"
   else
     err "La compilación falló. Últimas líneas del log:"
@@ -401,23 +413,24 @@ launch() {
 
   local state
   state=$(remote '
-if [ ! -x "$BASE/llama.cpp/build/bin/llama-server" ]; then echo NO_BIN
+if [ ! -x "$LLAMA_BIN" ]; then echo NO_BIN
 elif [ ! -f "$BASE/models/$MODEL_FILE" ]; then echo NO_MODEL
 elif curl -sf "127.0.0.1:$SERVER_PORT/health" >/dev/null 2>&1; then echo RUNNING
-elif pgrep -f "$BASE/llama.cpp/build/bin/llama-server" >/dev/null; then echo LOADING
+elif pgrep -f "$LLAMA_PAT" >/dev/null; then echo LOADING
 else echo READY; fi' 2>/dev/null | tail -1)
   case "$state" in
-    NO_BIN)   err "llama.cpp no está compilado. Usa Compilar (o --build)."; return 1 ;;
+    NO_BIN)   err "No hay llama-server en la VM. Usa Compilar (o --build), o la plantilla Llama.cpp de Vast."; return 1 ;;
     NO_MODEL) err "Falta el modelo. Usa Descargar (o --pull)."; return 1 ;;
     RUNNING)  ok "llama-server ya estaba corriendo" ;;
     READY|LOADING)
       if [[ "$state" == READY ]]; then
-        # Otro proceso en la GPU (ej. ComfyUI que el template arranca solo) le
+        # Otro proceso en la GPU (ComfyUI, o el llama-server propio de la plantilla
+        # Llama.cpp si tiene LLAMA_MODEL) le
         # quita VRAM: --fit manda más a CPU y Gemma va más lento.
         local used
         used=$(remote 'nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1' 2>/dev/null | tail -1 | tr -dc '0-9') || true
         if [[ -n "$used" ]] && (( used > 2000 )); then
-          warn "Ya hay ${used} MiB de VRAM ocupados por otro proceso (¿ComfyUI?). Gemma irá más lento. Mira con: --shell → nvidia-smi"
+          warn "Ya hay ${used} MiB de VRAM ocupados por otro proceso (¿ComfyUI? ¿LLAMA_MODEL en la plantilla Llama.cpp? → supervisorctl stop llama). Gemma irá más lento. Mira con: --shell → nvidia-smi"
         fi
         info "Cargando el modelo en la GPU (~30-90 s)..."
         remote '
@@ -425,7 +438,7 @@ mkdir -p "$BASE/logs"
 MM=(); [ -f "$BASE/models/$MMPROJ_FILE" ] && MM=(--mmproj "$BASE/models/$MMPROJ_FILE")
 # Sin -ngl: --fit (default de llama.cpp) reparte capas/expertos entre GPU y CPU
 # según la VRAM libre, en vez de reventar con out-of-memory.
-nohup "$BASE/llama.cpp/build/bin/llama-server" -m "$BASE/models/$MODEL_FILE" "${MM[@]}" \
+nohup "$LLAMA_BIN" -m "$BASE/models/$MODEL_FILE" "${MM[@]}" \
   --host 127.0.0.1 --port "$SERVER_PORT" -c "$CTX" >"$BASE/logs/server.log" 2>&1 </dev/null &
 ' 2>/dev/null
       else
@@ -435,7 +448,7 @@ nohup "$BASE/llama.cpp/build/bin/llama-server" -m "$BASE/models/$MODEL_FILE" "${
       for (( i = 0; i < 60; i++ )); do
         result=$(remote '
 if curl -sf "127.0.0.1:$SERVER_PORT/health" >/dev/null 2>&1; then echo UP
-elif ! pgrep -f "$BASE/llama.cpp/build/bin/llama-server" >/dev/null; then echo DIED
+elif ! pgrep -f "$LLAMA_PAT" >/dev/null; then echo DIED
 else echo WAIT; fi' 2>/dev/null | tail -1) || true
         [[ "$result" == "WAIT" || -z "$result" ]] || break
         printf '.'; sleep 3
@@ -481,7 +494,7 @@ stop() {
   require_connection || return 1
   info "Deteniendo Gemma (libera la VRAM)..."
   remote '
-pkill -f "$BASE/llama.cpp/build/bin/llama-server" && echo "✓ llama-server detenido" || echo "   llama-server no corría"
+pkill -f "$LLAMA_PAT" && echo "✓ llama-server detenido" || echo "   llama-server no corría"
 pkill -f "$BASE/gemma-vast-proxy.py" && echo "✓ proxy detenido" || echo "   proxy no corría"' 2>/dev/null || true
 }
 
@@ -523,6 +536,9 @@ open_browser() {
   if command -v xdg-open >/dev/null; then
     xdg-open "$url" >/dev/null 2>&1 &
     ok "Abriendo ${url}"
+  elif command -v open >/dev/null; then   # macOS
+    open "$url"
+    ok "Abriendo ${url}"
   else
     echo "Abre ${url} en tu navegador."
   fi
@@ -536,7 +552,7 @@ status() {
   title "Estado ($(target):${VM_PORT})"
   remote '
 yn() { if eval "$1"; then echo "✓ $2"; else echo "✗ $3"; fi; }
-yn "[ -x \"$BASE/llama.cpp/build/bin/llama-server\" ]" "llama.cpp compilado" "llama.cpp sin compilar"
+yn "[ -x \"$LLAMA_BIN\" ]" "llama-server: $LLAMA_BIN" "llama-server no instalado (usa --build)"
 for f in "$MODEL_FILE" "$MMPROJ_FILE"; do
   yn "[ -f \"$BASE/models/$f\" ]" "$f ($(du -h "$BASE/models/$f" 2>/dev/null | cut -f1))" "$f no descargado"
 done

@@ -6,15 +6,21 @@ por túnel SSH y sin API keys.
 
 - Modelo: `gemma-4-26B-A4B-it` (MoE, 4B activos por token), cuantizado UD-IQ4_XS por
   [unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF). Son 13.6GB, más 1.2GB de visión.
-- Motor: [llama.cpp](https://github.com/ggml-org/llama.cpp), compilado con CUDA en la VM.
+- Motor: [llama.cpp](https://github.com/ggml-org/llama.cpp). Usa el `llama-server` que trae la imagen
+  (plantilla Llama.cpp de Vast) o, si no hay, lo compila con CUDA en la VM.
 - Probado en una RTX A4000 16GB: ~49 tokens/s, ~15GB de VRAM, contexto de 32k.
 
 ## Qué necesitas
 
-- **Tu PC**: cualquier Linux con `bash`, `ssh`, `tar` y `procps` (vienen en casi todas las distros).
-- **La VM**: GPU NVIDIA de 16GB o más, imagen con CUDA *devel*, es decir con `nvcc`
-  (probado con la imagen base de Vast, CUDA 13.0; el script avisa si falta), unos
-  20GB de disco y tu clave SSH cargada en el proveedor.
+- **Tu PC**: Linux o macOS con `bash`, `ssh`, `tar` y `pgrep`/`pkill` (vienen en casi
+  todos; en macOS además `brew install bash`, porque trae bash 3). En Windows, usa WSL (Ubuntu dentro de Windows) y corre el script desde ahí.
+- **La VM**: GPU NVIDIA de 16GB o más, unos 20GB de disco y tu clave SSH cargada en el proveedor.
+  - **Recomendado: plantilla Llama.cpp de Vast** (imagen `vastai/llama-cpp`). Trae
+    `llama-server` ya compilado, así que no hay que compilar nada. Deja la variable
+    `LLAMA_MODEL` vacía al crear la instancia: si no, la plantilla arranca su propio
+    modelo y ocupa la GPU.
+  - Cualquier otra imagen con CUDA *devel* (con `nvcc`) también vale: el script compila
+    llama.cpp la primera vez (5-10 min más).
 
 ## Uso rápido
 
@@ -23,14 +29,15 @@ chmod +x adminvast.sh
 ./adminvast.sh --connect 'ssh -p PUERTO root@IP' --setup --test --open
 ```
 
-Pega el comando SSH tal como te lo da Vast. La primera vez compila y descarga
-(unos 15 min); después se abre `http://localhost:8082` en tu navegador.
+Pega el comando SSH tal como te lo da Vast. La primera vez descarga el modelo
+(unos 5 min con la plantilla Llama.cpp, 15 si tiene que compilar); después se abre
+`http://localhost:8082` en tu navegador.
 
 Sin argumentos, `./adminvast.sh` abre un menú. Recuerda la última VM.
 
 | Comando | Qué hace |
 |---|---|
-| `--setup` | Compila + descarga + lanza + abre el túnel |
+| `--setup` | Compila (si hace falta) + descarga + lanza + abre el túnel |
 | `--status` | Estado de todo |
 | `--test` | Prueba de texto + imagen |
 | `--stop` | Apaga Gemma (libera la GPU) |
